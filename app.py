@@ -19,7 +19,7 @@ from jewel_matcher import (
 )
 
 st.set_page_config(
-    page_title="Maison Onyx · Jewel Verification",
+    page_title="Emerald-Gold-Ring-Classification",
     page_icon="◈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -728,10 +728,9 @@ def main() -> None:
     st.markdown(
         f"""
         <div class="masthead">
-          <div class="brand"><span class="mark">◈</span> Maison Onyx &nbsp;·&nbsp; Jewel Authentication</div>
+          <div class="brand"><span class="mark">◈</span> Emerald-Gold-Ring-Classification</div>
           <div class="meta">
             <span>Edition I · 2026</span>
-            <span class="pulse">{device.upper()} ONLINE</span>
           </div>
         </div>
         """,
@@ -744,7 +743,7 @@ def main() -> None:
         st.markdown(
             """
             <div class="hero">
-              <div class="hero-eyebrow">Visual Authentication Protocol</div>
+
               <h1 class="hero-title">
                 The verification<br/>
                 of <span class="accent">form</span><span class="dot">.</span>
@@ -760,21 +759,22 @@ def main() -> None:
         )
     with hero_right:
         st.markdown('<div style="height: 1.5rem;"></div>', unsafe_allow_html=True)
+        if "saved_threshold" not in st.session_state:
+            st.session_state.saved_threshold = 0.85
         threshold = st.slider(
             "Pass Threshold",
             min_value=0.0,
             max_value=1.0,
-            value=0.85,
+            value=st.session_state.saved_threshold,
             step=0.01,
         )
+        if st.button("Save Threshold", use_container_width=True, key="save_thresh"):
+            st.session_state.saved_threshold = threshold
+            st.success(f"Threshold saved — {threshold:.2f}")
         st.markdown(
             f"""
             <div class="info-panel">
               <div class="info-panel-title">Instrument</div>
-              <div class="info-row">
-                <span class="info-key">Device</span>
-                <span class="info-val gold">{device.upper()}</span>
-              </div>
               <div class="info-row">
                 <span class="info-key">Architecture</span>
                 <span class="info-val">DinoV2 · ViT-B/14</span>
@@ -896,6 +896,27 @@ def main() -> None:
         '&mdash; a dark panel means the two embeddings agree everywhere; bright cells expose '
         'precisely where the representations disagree.'
         '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div style="
+            text-align: center;
+            padding: 3rem 0 1.5rem 0;
+            border-top: 1px solid rgba(244,241,234,0.08);
+            margin-top: 4rem;
+            font-family: 'Instrument Sans', sans-serif;
+            font-size: 0.62rem;
+            letter-spacing: 0.32em;
+            text-transform: uppercase;
+            color: #6B635A;
+        ">
+            © 2026 All Rights Reserved &nbsp;·&nbsp;
+            Made by <span style="color:#C9A961; font-weight:600;">iQube</span>
+            <span style="color:#B23C4B;">&#10084;</span>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
