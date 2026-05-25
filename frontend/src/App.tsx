@@ -10,6 +10,7 @@ import { Divider } from "./components/Divider";
 import { Footer } from "./components/Footer";
 import { Hero } from "./components/Hero";
 import { Masthead } from "./components/Masthead";
+import { PipelineStages } from "./components/PipelineStages";
 import { TimingRow } from "./components/TimingRow";
 import { UploadRow } from "./components/UploadRow";
 import { Verdict } from "./components/Verdict";
@@ -92,6 +93,15 @@ export default function App() {
 
           <div className="section-label">
             <span className="num">iii.</span>
+            Pipeline Stages
+            <span className="line" />
+          </div>
+          <PipelineStages result={result} />
+
+          <div style={{ height: "3rem" }} />
+
+          <div className="section-label">
+            <span className="num">iv.</span>
             Visual Comparison
             <span className="line" />
           </div>
@@ -100,7 +110,7 @@ export default function App() {
           <div style={{ height: "3rem" }} />
 
           <div className="section-label">
-            <span className="num">iv.</span>
+            <span className="num">v.</span>
             Per-Check Results
             <span className="line" />
           </div>
@@ -109,7 +119,7 @@ export default function App() {
           <div style={{ height: "3rem" }} />
 
           <div className="section-label">
-            <span className="num">v.</span>
+            <span className="num">vi.</span>
             Per-Stage Timing
             <span className="line" />
           </div>

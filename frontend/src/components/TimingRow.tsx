@@ -7,7 +7,7 @@ interface Props {
 const LABELS: Record<string, string> = {
   preprocess: "Preprocess",
   segmentation: "Segmentation",
-  rotation_estimation: "Rotation",
+  geometric_alignment: "Alignment",
   fine_registration: "Registration",
   profile_check: "Profile",
   decoration_check: "Decoration",
@@ -17,7 +17,7 @@ const LABELS: Record<string, string> = {
 };
 
 export function TimingRow({ timings }: Props) {
-  // Show: preprocess+segmentation, registration (rotation+fine), profile, decoration, surface, total
+  // Show: preprocess+segmentation, alignment (similarity+fine SIFT), profile, decoration, surface, total
   const grouped: { label: string; value: number; gold?: boolean }[] = [];
 
   const get = (n: string) => timings.find((t) => t.name === n)?.ms ?? 0;
@@ -25,7 +25,7 @@ export function TimingRow({ timings }: Props) {
   grouped.push({ label: "Prep+Seg", value: get("preprocess") + get("segmentation") });
   grouped.push({
     label: "Alignment",
-    value: get("rotation_estimation") + get("fine_registration"),
+    value: get("geometric_alignment") + get("fine_registration"),
   });
   grouped.push({ label: "Profile", value: get("profile_check") });
   grouped.push({ label: "Decoration", value: get("decoration_check") });
