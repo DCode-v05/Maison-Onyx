@@ -1,6 +1,11 @@
-streamlit>=1.30
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+pydantic>=2.6
 # torch>=2.0 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 transformers>=4.36
 pillow>=10.0
 numpy>=1.24
-matplotlib>=3.7
+opencv-contrib-python>=4.9
+scikit-image>=0.22
+scipy>=1.11
