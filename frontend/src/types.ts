@@ -21,24 +21,10 @@ export interface StageTiming {
   ms: number;
 }
 
-export interface StageImages {
-  master_input: string;
-  live_input: string;
-  master_with_bbox: string;
-  live_with_bbox: string;
-  master_with_mask: string;
-  live_with_mask: string;
-  master_cropped: string;
-  live_cropped: string;
-  live_after_alignment: string;
-  live_after_registration: string;
-}
-
 export interface InspectResponse {
   decision: "ACCEPT" | "REVIEW" | "REJECT";
   reasons: string[];
   rotation_deg: number;
-  scale_factor: number;
   registration: {
     reliable: boolean;
     ncc: number;
@@ -53,7 +39,6 @@ export interface InspectResponse {
   master_png: string;
   live_aligned_png: string;
   difference_overlay_png: string;
-  stage_images: StageImages;
 }
 
 export interface InfoResponse {

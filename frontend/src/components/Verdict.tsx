@@ -32,9 +32,6 @@ export function Verdict({ result }: Props) {
           <span className="num">{result.rotation_deg.toFixed(1)}°</span>
           <span className="lbl">rotation correction</span>
           <br />
-          <span className="num">{result.scale_factor.toFixed(2)}×</span>
-          <span className="lbl">scale correction</span>
-          <br />
           <span className="num">
             {result.registration.reliable ? "✓" : "✗"} {result.registration.ncc.toFixed(2)}
           </span>
