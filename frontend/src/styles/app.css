@@ -587,32 +587,78 @@ p, span, label, li {
   .timing-row { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* ===== Comparison strip ===== */
-.comparison-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 1.25rem;
-}
-.comparison-cell {
+/* ===== Visual display (master cell + live cell) ===== */
+.visual-display {
   display: flex;
   flex-direction: column;
-  gap: 0.65rem;
+  gap: 1.75rem;
 }
-.comparison-cell .label {
+.display-cell {
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  padding: 1.25rem 1.25rem 1.5rem;
+}
+.display-cell-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--hairline);
+}
+.display-cell-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.45rem;
+  color: var(--gold-bright);
+  letter-spacing: -0.01em;
+}
+.display-cell-sub {
   font-size: 0.62rem;
   letter-spacing: 0.28em;
   text-transform: uppercase;
   color: var(--ink-muted);
 }
-.comparison-cell .frame {
+
+.frame-strip {
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--gold-soft) transparent;
+  padding-bottom: 0.4rem;
+}
+.frame-strip::-webkit-scrollbar { height: 6px; }
+.frame-strip::-webkit-scrollbar-thumb { background: var(--gold-soft); border-radius: 3px; }
+
+.frame-stage {
+  flex: 0 0 auto;
+  width: clamp(220px, 22vw, 320px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.frame-stage-label {
+  font-size: 0.62rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.frame-stage-caption {
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.frame-stage .frame {
   border: 1px solid var(--hairline);
-  background: var(--bg-elevated);
+  background: var(--bg);
   width: 100%;
   aspect-ratio: 1 / 1;
   overflow: hidden;
   position: relative;
 }
-.comparison-cell .frame img {
+.frame-stage .frame img {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -626,7 +672,8 @@ p, span, label, li {
   gap: 1.25rem;
 }
 @media (max-width: 1024px) {
-  .comparison-grid, .checks-grid { grid-template-columns: 1fr; }
+  .checks-grid { grid-template-columns: 1fr; }
+  .frame-stage { width: clamp(200px, 60vw, 280px); }
 }
 .check-card {
   background: var(--bg-elevated);

@@ -22,9 +22,9 @@ from . import (
     visualizer,
 )
 from .types import (
-    BoundingBox,
     PipelineResult,
     RegistrationResult,
+    SegmentationResult,
     StageTiming,
 )
 
@@ -45,6 +45,31 @@ def _ms(t0: float, t1: float) -> float:
     return (t1 - t0) * 1000.0
 
 
+def _seg_from_mask(mask: np.ndarray) -> SegmentationResult:
+    """Rebuild a SegmentationResult from a cropped mask.
+
+    After the tight-bbox crop, the original SegmentationResult (which referred
+    to the full frame's coordinate space) is stale. This recomputes bbox and
+    centroid relative to the cropped mask so rotation, registration, and the
+    three checks all operate in a consistent frame.
+    """
+    h, w = mask.shape[:2]
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return SegmentationResult(
+            mask=mask, bbox=(0, 0, w, h), centroid=(w / 2.0, h / 2.0)
+        )
+    x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
+    m = cv2.moments(mask, binaryImage=True)
+    cx = m["m10"] / m["m00"] if m["m00"] > 0 else (x0 + x1) / 2.0
+    cy = m["m01"] / m["m00"] if m["m00"] > 0 else (y0 + y1) / 2.0
+    return SegmentationResult(
+        mask=mask,
+        bbox=(x0, y0, x1 - x0 + 1, y1 - y0 + 1),
+        centroid=(float(cx), float(cy)),
+    )
+
+
 def warmup(n: int = 3) -> None:
     """Hit each model path once so first real request is not cold-start."""
     decoration_mod.init_model()
@@ -61,29 +86,47 @@ def run_pipeline(
 ) -> PipelineResult:
     timings: List[StageTiming] = []
 
-    # Stage 1 — Preprocess (both images)
+    # Stage 1 — Preprocess. Resizes each input so its long side is the
+    # working resolution. No padding to a common shape — each image keeps
+    # its native aspect ratio; the tight-bbox crop in Stage 2 makes them
+    # comparable.
     t0 = _now()
     master_pp = preprocess.preprocess(master_input)
     live_pp = preprocess.preprocess(live_input)
-    # Pad the smaller to the larger so downstream operations align in shape.
-    h = max(master_pp.working.shape[0], live_pp.working.shape[0])
-    w = max(master_pp.working.shape[1], live_pp.working.shape[1])
-
-    def _pad(img: np.ndarray) -> np.ndarray:
-        ph = h - img.shape[0]
-        pw = w - img.shape[1]
-        if ph or pw:
-            return cv2.copyMakeBorder(img, 0, ph, 0, pw, cv2.BORDER_CONSTANT, value=(0, 0, 0))
-        return img
-
-    master_bgr = _pad(master_pp.working)
-    live_bgr = _pad(live_pp.working)
+    master_full = master_pp.working
+    live_full = live_pp.working
+    live_preprocessed = live_full.copy()
     timings.append(StageTiming("preprocess", _ms(t0, _now())))
 
-    # Stage 2 — Segmentation
+    # Stage 2 — Segmentation + tight bounding-box crop.
+    # Each piece is cropped to its own (xmin, ymin, xmax, ymax) from
+    # segmentation — no extra padding around the silhouette. Live is then
+    # resized to master's HxW so downstream stages compare like-for-like in
+    # the master's coordinate frame.
     t0 = _now()
-    master_seg = segmentation.segment(master_bgr)
-    live_seg = segmentation.segment(live_bgr)
+    master_seg_full = segmentation.segment(master_full)
+    live_seg_full = segmentation.segment(live_full)
+
+    mx, my, mw, mh = master_seg_full.bbox
+    lx, ly, lw, lh = live_seg_full.bbox
+
+    master_bgr = master_full[my:my + mh, mx:mx + mw].copy()
+    master_mask = master_seg_full.mask[my:my + mh, mx:mx + mw].copy()
+
+    live_crop_bgr = live_full[ly:ly + lh, lx:lx + lw].copy()
+    live_crop_mask = live_seg_full.mask[ly:ly + lh, lx:lx + lw].copy()
+
+    if (lh, lw) != (mh, mw):
+        live_bgr = cv2.resize(live_crop_bgr, (mw, mh), interpolation=cv2.INTER_LINEAR)
+        live_mask = cv2.resize(live_crop_mask, (mw, mh), interpolation=cv2.INTER_NEAREST)
+    else:
+        live_bgr = live_crop_bgr
+        live_mask = live_crop_mask
+
+    master_seg = _seg_from_mask(master_mask)
+    live_seg = _seg_from_mask(live_mask)
+
+    live_segmented = visualizer.overlay_mask(live_bgr, live_seg.mask)
     timings.append(StageTiming("segmentation", _ms(t0, _now())))
 
     # Stage 3 — Rotation estimation
@@ -91,6 +134,7 @@ def run_pipeline(
     rot = rotation.estimate_rotation(
         master_bgr, master_seg.mask, live_bgr, live_seg.mask
     )
+    live_rotated = rot.rotated_image.copy()
     timings.append(StageTiming("rotation_estimation", _ms(t0, _now())))
 
     # Stage 4 — Fine registration. Skip SIFT if rotation already aligned the
@@ -121,24 +165,28 @@ def run_pipeline(
     live_aligned = reg.warped
     live_aligned_mask = reg.warped_mask
 
-    # Stage 5 — Profile check
+    # Stage 5 — Profile check (edge-based; needs the BGR images, not just masks)
     t0 = _now()
-    profile = profile_check.profile_check(master_seg.mask, live_aligned_mask)
+    profile = profile_check.profile_check(
+        master_bgr, master_seg.mask, live_aligned, live_aligned_mask
+    )
     timings.append(StageTiming("profile_check", _ms(t0, _now())))
 
-    # Build the shared piece silhouette once — used by both decoration and
-    # surface checks to suppress anything outside the jewel.
-    shared_mask = ((master_seg.mask > 0) & (live_aligned_mask > 0)).astype(np.uint8) * 255
-
-    # Stage 6 — Decoration check
+    # Stage 6 — Decoration check.
+    # Compares the segmented master against the rotation-aligned live (NOT
+    # the SIFT-warped live). Working on the rotation-aligned frame avoids
+    # any homography-induced texture warping that could shift DINOv2 patch
+    # features and produce false decoration deviations.
     t0 = _now()
+    deco_shared_mask = ((master_seg.mask > 0) & (rot.rotated_mask > 0)).astype(np.uint8) * 255
     deco = decoration_mod.decoration_check(
-        master_bgr, live_aligned, piece_mask=shared_mask
+        master_bgr, rot.rotated_image, piece_mask=deco_shared_mask
     )
     _sync()
     timings.append(StageTiming("decoration_check", _ms(t0, _now())))
 
-    # Stage 7 — Surface check
+    # Stage 7 — Surface check (SIFT-aligned live; needs sub-pixel registration).
+    shared_mask = ((master_seg.mask > 0) & (live_aligned_mask > 0)).astype(np.uint8) * 255
     t0 = _now()
     surf = surface_check.surface_check(master_bgr, live_aligned, shared_mask)
     timings.append(StageTiming("surface_check", _ms(t0, _now())))
@@ -148,17 +196,14 @@ def run_pipeline(
     decision_label, reasons = decision.decide(reg, profile, deco, surf)
     timings.append(StageTiming("decision", _ms(t0, _now())))
 
-    # Composite difference overlay. Decoration is the only check that
-    # localizes a real defect cleanly inside a patterned region — profile
-    # and surface boxes are alignment noise on the per-element scale of
-    # pave-set stones. The per-check cards still show what each check
-    # found; the unified overlay shows only the trustworthy boxes.
-    diff_boxes: List[BoundingBox] = list(deco.boxes)
-    diff_overlay = visualizer.build_difference_overlay(master_bgr, live_aligned, diff_boxes)
-    # Add master/live contour outlines for the profile context.
-    diff_overlay = visualizer.draw_contour_outlines(
-        diff_overlay, master_seg.mask, live_aligned_mask
-    )
+    # Build the edge overlays — these mirror what the profile check actually
+    # compares (Canny edges over the masked grayscale). Drawing them on the
+    # master and the live registered image makes the "what was aligned, and
+    # where does its structure differ" answerable at a glance.
+    master_edges = visualizer.edge_map(master_bgr, master_seg.mask)
+    live_edges = visualizer.edge_map(live_aligned, live_aligned_mask)
+    master_contoured = visualizer.draw_edges(master_bgr, master_edges)
+    live_registered = visualizer.draw_edges(live_aligned, live_edges)
 
     total_ms = sum(s.ms for s in timings)
     timings.append(StageTiming("total", total_ms))
@@ -174,6 +219,9 @@ def run_pipeline(
         timings=timings,
         total_ms=total_ms,
         master_image=master_bgr,
-        live_aligned=live_aligned,
-        difference_overlay=diff_overlay,
+        master_contoured=master_contoured,
+        live_preprocessed=live_preprocessed,
+        live_segmented=live_segmented,
+        live_rotated=live_rotated,
+        live_registered=live_registered,
     )

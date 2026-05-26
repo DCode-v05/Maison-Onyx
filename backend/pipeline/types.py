@@ -54,9 +54,10 @@ class RegistrationResult:
 class ProfileCheckResult:
     shape_distance: float
     area_deviation: float
-    silhouette_iou: float
-    verdict: str            # PASS | BORDERLINE | FAIL
-    diff_mask: np.ndarray
+    silhouette_iou: float          # actually edge IoU since the switch to Canny
+    missing_edge_ratio: float      # fraction of master edges absent in live
+    verdict: str                   # PASS | BORDERLINE | FAIL
+    diff_overlay: np.ndarray       # BGR — master dimmed + red missing + orange excess
     boxes: List[BoundingBox] = field(default_factory=list)
 
 
@@ -64,7 +65,9 @@ class ProfileCheckResult:
 class DecorationCheckResult:
     global_similarity: float
     problem_patch_ratio: float
+    max_color_distance: float    # LAB delta-E worst-case across all patches
     heatmap: np.ndarray      # H x W float32 in [0, 1]
+    diff_overlay: np.ndarray # BGR — JET heatmap blended over live + bboxes drawn
     verdict: str
     boxes: List[BoundingBox] = field(default_factory=list)
 
@@ -90,6 +93,13 @@ class PipelineResult:
     rotation: RotationResult
     timings: List[StageTiming]
     total_ms: float
-    master_image: np.ndarray          # BGR
-    live_aligned: np.ndarray          # BGR (post-registration)
-    difference_overlay: np.ndarray    # BGR with all boxes drawn
+
+    # Master panel
+    master_image: np.ndarray          # BGR — bare reference at working resolution
+    master_contoured: np.ndarray      # BGR — external + internal contours drawn over master
+
+    # Live stage progression (left -> right in the UI)
+    live_preprocessed: np.ndarray     # after Stage 1
+    live_segmented: np.ndarray        # after Stage 2 — mask overlay on live
+    live_rotated: np.ndarray          # after Stage 3 — moment-based rotation
+    live_registered: np.ndarray       # after Stage 4 — SIFT-aligned, with contours overlaid

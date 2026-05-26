@@ -1,10 +1,20 @@
-"""Stage 3 — Rotation estimation.
+"""Stage 3 — Rotation / similarity alignment.
 
-Uses central moments to compute the angle of the major axis of the
-segmented piece. Compares against the master angle and rotates the live
-image by the delta. Resolves the 180-deg ambiguity by trying both 0 and
-180 corrections and picking whichever produces the higher NCC with the
-master inside the union mask.
+Aligns the live piece to the master via a single similarity transform:
+
+  - rotation:    live orientation -> master orientation (image moments)
+  - translation: live centroid    -> master centroid
+  - scale:       sqrt(master_area / live_area), isotropic
+
+Without the translation + scale terms, the live piece stays rotated around
+its own centroid — fine for orientation, but if master and live centroids
+sit at different positions in their (same-size) cropped frames, every
+downstream stage carries that offset. The decoration heatmap's hotspot
+location is particularly sensitive to it.
+
+The 180-deg ambiguity inherent in second-moment angle estimation is
+resolved by warping with both candidates (delta, delta + 180) and keeping
+whichever produces the higher masked NCC against the master.
 """
 
 from __future__ import annotations
@@ -29,14 +39,13 @@ def _orientation_angle(mask: np.ndarray) -> float:
     return float(np.degrees(theta))
 
 
-def _rotate(img: np.ndarray, center: Tuple[float, float], angle_deg: float,
-            flags: int = cv2.INTER_LINEAR, border_value=0) -> np.ndarray:
-    h, w = img.shape[:2]
-    M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
-    return cv2.warpAffine(
-        img, M, (w, h),
-        flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=border_value,
-    )
+def _centroid_and_area(mask: np.ndarray) -> Tuple[Tuple[float, float], float]:
+    h, w = mask.shape[:2]
+    m = cv2.moments(mask, binaryImage=True)
+    area = float(m["m00"])
+    if area <= 0:
+        return (w / 2.0, h / 2.0), 0.0
+    return (float(m["m10"] / area), float(m["m01"] / area)), area
 
 
 def _ncc(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float:
@@ -64,21 +73,35 @@ def estimate_rotation(
     delta = angle_master - angle_live
 
     h, w = live_bgr.shape[:2]
-    # Rotate around the centroid of the live piece.
-    m = cv2.moments(live_mask, binaryImage=True)
-    if m["m00"] > 0:
-        cx = m["m10"] / m["m00"]
-        cy = m["m01"] / m["m00"]
+    (live_cx, live_cy), live_area = _centroid_and_area(live_mask)
+    (master_cx, master_cy), master_area = _centroid_and_area(master_mask)
+
+    if live_area > 0 and master_area > 0:
+        scale = float(np.sqrt(master_area / live_area))
     else:
-        cx, cy = w / 2.0, h / 2.0
-    center = (cx, cy)
+        scale = 1.0
 
-    # Candidate 1: delta. Candidate 2: delta + 180.
-    cand1 = _rotate(live_bgr, center, delta)
-    cand1_mask = _rotate(live_mask, center, delta, flags=cv2.INTER_NEAREST)
+    def _transform(angle: float) -> np.ndarray:
+        """Rotate around live centroid with scale, then translate the live
+        centroid onto the master centroid in a single affine matrix."""
+        m = cv2.getRotationMatrix2D((live_cx, live_cy), angle, scale)
+        m[0, 2] += master_cx - live_cx
+        m[1, 2] += master_cy - live_cy
+        return m
 
-    cand2 = _rotate(live_bgr, center, delta + 180.0)
-    cand2_mask = _rotate(live_mask, center, delta + 180.0, flags=cv2.INTER_NEAREST)
+    def _warp(img: np.ndarray, m: np.ndarray, flags: int) -> np.ndarray:
+        return cv2.warpAffine(
+            img, m, (w, h), flags=flags,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+
+    m1 = _transform(delta)
+    m2 = _transform(delta + 180.0)
+
+    cand1 = _warp(live_bgr, m1, cv2.INTER_LINEAR)
+    cand1_mask = _warp(live_mask, m1, cv2.INTER_NEAREST)
+    cand2 = _warp(live_bgr, m2, cv2.INTER_LINEAR)
+    cand2_mask = _warp(live_mask, m2, cv2.INTER_NEAREST)
 
     master_gray = cv2.cvtColor(master_bgr, cv2.COLOR_BGR2GRAY)
     g1 = cv2.cvtColor(cand1, cv2.COLOR_BGR2GRAY)

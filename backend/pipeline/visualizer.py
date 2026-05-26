@@ -22,6 +22,7 @@ BGR_YELLOW = (0, 255, 255)
 BGR_ORANGE = (0, 165, 255)
 BGR_MAGENTA = (255, 0, 255)
 BGR_CYAN = (255, 255, 0)
+BGR_GOLD = (97, 169, 201)   # mirrors the UI gold accent (#C9A961)
 
 COLOR_MAP = {
     "red": BGR_RED,
@@ -59,6 +60,207 @@ def draw_contour_outlines(
     cv2.drawContours(out, contours_m, -1, BGR_GREEN, 1)
     cv2.drawContours(out, contours_l, -1, BGR_YELLOW, 1)
     return out
+
+
+# ---- Edge detection (full structure) ----
+
+EDGE_ROI_ERODE_PX = 3       # how far inside the silhouette to start trusting edges
+EDGE_SIGMA = 0.33           # median-based adaptive Canny thresholds (well-known default)
+CLAHE_CLIP = 3.0
+CLAHE_TILE = (8, 8)
+
+
+def edge_map(bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Canny edges over the piece, captures full structure (outer outline +
+    pave stones + cutouts + engravings + band engravings).
+
+    Three things make this work on subtle gold-on-gold detail where naive
+    Canny fails:
+
+    1. CLAHE locally amplifies contrast so the band's cross-hatch engravings
+       and the metal/stone interface produce real gradients.
+    2. Thresholds are derived from the image median (sigma=0.33) instead of
+       hard-coded — auto-tunes per piece, per lighting.
+    3. cv2.Canny is run with L2gradient=True for a more accurate gradient
+       magnitude (matters when contrast is low).
+
+    The external silhouette is OR'd in at the end so the outer profile is
+    guaranteed even if Canny suppressed it at the band/background boundary.
+    """
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    # CLAHE before any blur — the blur happens next as part of edge prep.
+    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_TILE)
+    gray = clahe.apply(gray)
+
+    # Mild blur to suppress sensor/JPEG speckle without erasing real edges.
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Median-based adaptive thresholds. The median is computed over the
+    # piece interior only, so background lighting doesn't bias the result.
+    roi_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (EDGE_ROI_ERODE_PX, EDGE_ROI_ERODE_PX))
+    roi = cv2.erode((mask > 0).astype(np.uint8) * 255, roi_k)
+    piece_pixels = blurred[roi > 0]
+    if piece_pixels.size > 0:
+        med = float(np.median(piece_pixels))
+    else:
+        med = float(np.median(blurred))
+    low = int(max(0, (1.0 - EDGE_SIGMA) * med))
+    high = int(min(255, (1.0 + EDGE_SIGMA) * med))
+
+    edges = cv2.Canny(blurred, low, high, apertureSize=3, L2gradient=True)
+
+    # Restrict to the piece interior.
+    edges = cv2.bitwise_and(edges, edges, mask=roi)
+
+    # Guarantee the external silhouette is present even when Canny missed it.
+    contours, _ = cv2.findContours(
+        (mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
+    if contours:
+        outline = np.zeros_like(edges)
+        cv2.drawContours(outline, contours, -1, 255, 1)
+        edges = cv2.bitwise_or(edges, outline)
+    return edges
+
+
+def draw_edges(
+    img: np.ndarray,
+    edges: np.ndarray,
+    color: Tuple[int, int, int] = BGR_GREEN,
+    thickness: int = 1,
+) -> np.ndarray:
+    """Paint every edge pixel in `color`. `thickness` dilates the edge map."""
+    out = img.copy()
+    if thickness > 1:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (thickness, thickness))
+        edges = cv2.dilate(edges, k)
+    sel = edges > 0
+    if sel.any():
+        out[sel] = np.array(color, dtype=np.uint8)
+    return out
+
+
+def build_profile_deviation_overlay(
+    master_bgr: np.ndarray,
+    missing_edges: np.ndarray,
+    excess_edges: np.ndarray,
+    dim: float = 0.40,
+    missing_thickness: int = 2,
+    excess_thickness: int = 1,
+) -> np.ndarray:
+    """Render the per-check Profile cell: master image dimmed, with master-only
+    edges (i.e., edges present in the master but absent in the live image)
+    painted bright red, and live-only edges in orange.
+
+    The red pixels are the answer to "where does the live piece's structure
+    deviate from the master?" Missing is rendered with priority (thicker,
+    drawn on top of excess) because that's the question the operator is
+    actually asking when a profile FAIL fires.
+    """
+    out = (master_bgr.astype(np.float32) * dim).astype(np.uint8)
+
+    if excess_thickness > 1:
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (excess_thickness, excess_thickness)
+        )
+        ee = cv2.dilate(excess_edges, k)
+    else:
+        ee = excess_edges
+    sel = ee > 0
+    if sel.any():
+        out[sel] = np.array(BGR_ORANGE, dtype=np.uint8)
+
+    if missing_thickness > 1:
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (missing_thickness, missing_thickness)
+        )
+        me = cv2.dilate(missing_edges, k)
+    else:
+        me = missing_edges
+    sel = me > 0
+    if sel.any():
+        out[sel] = np.array(BGR_RED, dtype=np.uint8)
+
+    return out
+
+
+def _filled_silhouette(mask: np.ndarray) -> np.ndarray:
+    """Fill the outer contour so the silhouette has no internal holes.
+
+    The segmentation mask is Swiss-cheese on jewelry photographs because
+    Otsu thresholds out the bright pave stones — they get classified as
+    background and end up as holes in the foreground mask. Filling the
+    outer contour gives a clean solid shape that covers the whole piece.
+    """
+    out = np.zeros_like(mask, dtype=np.uint8)
+    contours, _ = cv2.findContours(
+        (mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
+    if not contours:
+        return out
+    cv2.drawContours(out, contours, -1, 255, thickness=cv2.FILLED)
+    return out
+
+
+def build_decoration_deviation_overlay(
+    base_bgr: np.ndarray,
+    deviation_map: np.ndarray,
+    piece_mask: np.ndarray | None = None,
+    colormap: int = cv2.COLORMAP_JET,
+    alpha: float = 0.65,
+    background_dim: float = 0.35,
+) -> np.ndarray:
+    """JET heatmap blended over `base_bgr`, bounded by the *filled* silhouette.
+
+    `deviation_map` is already in [0, 1] where 0 = perfect match and 1 = max
+    deviation. The caller is responsible for combining whatever deviation
+    signals it wants (DINOv2 1-sim, LAB color distance, surface anomalies)
+    into this single field — keeps the visualizer agnostic to the source.
+
+    `base_bgr` is whatever image the operator should see *under* the heatmap.
+    For decoration we pass the rotation-aligned live so the hotspot lands on
+    the visible defect, not at a corresponding-but-translated master location.
+
+    Inside the silhouette: base blended with the JET heatmap at `alpha`.
+    Outside the silhouette: base dimmed to `background_dim` brightness.
+    """
+    deviation = np.clip(deviation_map, 0.0, 1.0)
+    dev_u8 = (deviation * 255).astype(np.uint8)
+    heatmap = cv2.applyColorMap(dev_u8, colormap)
+
+    if piece_mask is None:
+        return cv2.addWeighted(base_bgr, 1.0 - alpha, heatmap, alpha, 0.0)
+
+    silhouette = _filled_silhouette(piece_mask)
+    sel = silhouette > 0
+
+    out = (base_bgr.astype(np.float32) * background_dim).astype(np.uint8)
+    if sel.any():
+        blended = cv2.addWeighted(base_bgr, 1.0 - alpha, heatmap, alpha, 0.0)
+        out[sel] = blended[sel]
+    return out
+
+
+def overlay_mask(
+    img: np.ndarray,
+    mask: np.ndarray,
+    color: Tuple[int, int, int] = BGR_GOLD,
+    alpha: float = 0.40,
+    dim_outside: float = 0.55,
+) -> np.ndarray:
+    """Tint pixels under the mask, dim pixels outside it.
+
+    Used for the "segmented" panel in the live stage strip — gives the
+    operator an at-a-glance read of what stage 2 considered the piece.
+    """
+    out = img.astype(np.float32)
+    sel = mask > 0
+    if sel.any():
+        tint = np.array(color, dtype=np.float32)
+        out[sel] = out[sel] * (1.0 - alpha) + tint * alpha
+    if dim_outside < 1.0:
+        out[~sel] = out[~sel] * dim_outside
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def build_difference_overlay(

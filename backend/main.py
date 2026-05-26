@@ -66,9 +66,14 @@ class InspectResponse(BaseModel):
     surface: CheckResultModel
     timings: List[StageTimingModel]
     total_ms: float
+    # Master cell
     master_png: str
-    live_aligned_png: str
-    difference_overlay_png: str
+    master_contoured_png: str
+    # Live cell — horizontal stage progression
+    live_preprocessed_png: str
+    live_segmented_png: str
+    live_rotated_png: str
+    live_registered_png: str
 
 
 class InfoResponse(BaseModel):
@@ -95,23 +100,19 @@ def _boxes_to_models(boxes: List[BoundingBox]) -> List[BoundingBoxModel]:
 
 
 def _serialize(result: PipelineResult) -> InspectResponse:
-    decoration_heatmap_bgr = visualizer.colorize_decoration_heatmap(result.decoration.heatmap)
     surface_heatmap_bgr = visualizer.colorize_surface_heatmap(result.surface.defect_map)
-    # Profile diff mask as a tinted overlay.
-    profile_diff_color = cv2.cvtColor(result.profile.diff_mask, cv2.COLOR_GRAY2BGR)
-    profile_diff_color[..., 0] = 0   # zero blue
-    profile_diff_color[..., 1] = 0   # zero green; red remains -> highlights diff in red
 
     profile = CheckResultModel(
         name="profile",
         verdict=result.profile.verdict,
         metrics={
-            "shape_distance": round(result.profile.shape_distance, 5),
+            "edge_iou": round(result.profile.silhouette_iou, 5),
+            "missing_edge_ratio": round(result.profile.missing_edge_ratio, 5),
             "area_deviation": round(result.profile.area_deviation, 5),
-            "silhouette_iou": round(result.profile.silhouette_iou, 5),
+            "shape_distance": round(result.profile.shape_distance, 5),
         },
         boxes=_boxes_to_models(result.profile.boxes),
-        heatmap_png=_png_b64(profile_diff_color),
+        heatmap_png=_png_b64(result.profile.diff_overlay),
     )
 
     decoration = CheckResultModel(
@@ -120,9 +121,10 @@ def _serialize(result: PipelineResult) -> InspectResponse:
         metrics={
             "global_similarity": round(result.decoration.global_similarity, 5),
             "problem_patch_ratio": round(result.decoration.problem_patch_ratio, 5),
+            "max_color_distance": round(result.decoration.max_color_distance, 2),
         },
         boxes=_boxes_to_models(result.decoration.boxes),
-        heatmap_png=_png_b64(decoration_heatmap_bgr),
+        heatmap_png=_png_b64(result.decoration.diff_overlay),
     )
 
     surface = CheckResultModel(
@@ -153,8 +155,11 @@ def _serialize(result: PipelineResult) -> InspectResponse:
         timings=[StageTimingModel(name=t.name, ms=round(t.ms, 3)) for t in result.timings],
         total_ms=round(result.total_ms, 3),
         master_png=_png_b64(result.master_image),
-        live_aligned_png=_png_b64(result.live_aligned),
-        difference_overlay_png=_png_b64(result.difference_overlay),
+        master_contoured_png=_png_b64(result.master_contoured),
+        live_preprocessed_png=_png_b64(result.live_preprocessed),
+        live_segmented_png=_png_b64(result.live_segmented),
+        live_rotated_png=_png_b64(result.live_rotated),
+        live_registered_png=_png_b64(result.live_registered),
     )
 
 

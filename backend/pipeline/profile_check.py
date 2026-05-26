@@ -1,14 +1,16 @@
 """Stage 5 — Profile check.
 
-Compares the silhouette of the registered live piece against the master
-silhouette using three metrics:
-  - Hu-moment shape distance (cv2.matchShapes)
-  - Fractional area deviation
-  - Silhouette IoU
+Compares the full edge structure of the registered live piece against the
+master using three metrics:
+  - Hu-moment shape distance (cv2.matchShapes on the dilated edge map)
+  - Edge-pixel area deviation
+  - Edge IoU (dilated, so sub-pixel misalignment doesn't kill it)
 
-Each piece passes if all three are within their thresholds. Connected
-components in the XOR of the two masks become bounding boxes labeled
-EXCESS (live has, master doesn't) or MISSING (master has, live doesn't).
+The edge map is Canny over the masked grayscale image — it catches outer
+outline + pave stones + cutouts + engravings, not just the silhouette.
+Connected components in the XOR of the two edge maps become bounding
+boxes labeled EXCESS (live has, master doesn't) or MISSING (master has,
+live doesn't).
 """
 
 from __future__ import annotations
@@ -18,41 +20,25 @@ from typing import List
 import cv2
 import numpy as np
 
+from . import visualizer
 from .types import BoundingBox, ProfileCheckResult
 
-# Thresholds — calibration starting points. Tune on a calibration set.
-SHAPE_HARD = 0.10
-SHAPE_BORDER = 0.05
-AREA_HARD = 0.15
-AREA_BORDER = 0.08
-IOU_HARD = 0.85
-IOU_BORDER = 0.92
+# Thresholds — edge-based IoU is *much* lower magnitude than silhouette IoU
+# because edges are sparse. These are calibration starting points; tune on a
+# labeled calibration set per SKU.
+SHAPE_HARD = 0.30
+SHAPE_BORDER = 0.15
+AREA_HARD = 0.40
+AREA_BORDER = 0.20
+IOU_HARD = 0.30
+IOU_BORDER = 0.50
+# Fraction of master edge pixels that have no near-neighbor in the live edge map.
+# This is the direct answer to "how much master structure is missing on the live piece?"
+MISSING_HARD = 0.40
+MISSING_BORDER = 0.20
 
 MIN_DIFF_AREA_PX = 300
-EROSION_PX = 7  # absorb sub-pixel misalignment between master and registered live
-
-
-def _largest_contour(mask: np.ndarray):
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    if not contours:
-        return None
-    return max(contours, key=cv2.contourArea)
-
-
-def _filled_silhouette(mask: np.ndarray) -> np.ndarray:
-    """Return a clean filled silhouette of the largest external contour.
-
-    The raw segmentation mask is a binarized foreground that includes interior
-    holes (gaps between pave stones, open cutouts, dark shadows on the band).
-    The profile check is supposed to compare outer outlines only, so we
-    re-render just the largest external contour as a solid filled region.
-    """
-    out = np.zeros_like(mask, dtype=np.uint8)
-    contour = _largest_contour(mask)
-    if contour is None:
-        return out
-    cv2.drawContours(out, [contour], -1, 255, thickness=cv2.FILLED)
-    return out
+EDGE_DILATE_PX = 5          # tolerance for sub-pixel alignment when comparing edge maps
 
 
 def _box_components(mask: np.ndarray, label: str, color: str) -> List[BoundingBox]:
@@ -67,14 +53,29 @@ def _box_components(mask: np.ndarray, label: str, color: str) -> List[BoundingBo
     return boxes
 
 
-def profile_check(master_mask: np.ndarray, live_mask: np.ndarray) -> ProfileCheckResult:
-    # Replace the raw foreground masks with clean filled silhouettes
-    # (outer contour only). Without this, every internal hole — pave gaps,
-    # the open cutout, band shadows — contaminates the profile comparison.
-    master_sil = _filled_silhouette(master_mask)
-    live_sil = _filled_silhouette(live_mask)
-    mm = (master_sil > 0).astype(np.uint8)
-    lm = (live_sil > 0).astype(np.uint8)
+def profile_check(
+    master_bgr: np.ndarray,
+    master_mask: np.ndarray,
+    live_bgr: np.ndarray,
+    live_mask: np.ndarray,
+) -> ProfileCheckResult:
+    # Full structure via Canny edges — captures internal detail (pave stones,
+    # cutouts, engravings) that the segmentation mask cannot represent because
+    # it gets closed into a solid blob by the morphological cleanup.
+    master_edges = visualizer.edge_map(master_bgr, master_mask)
+    live_edges = visualizer.edge_map(live_bgr, live_mask)
+
+    # Dilate each edge map by EDGE_DILATE_PX. The dilated version answers
+    # "is there a live (or master) edge *near* this pixel?" — the tolerance
+    # that absorbs sub-pixel alignment error. The RAW edge maps are used to
+    # ask the per-pixel deviation question: "is each master edge present in
+    # the live image, within tolerance?"
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (EDGE_DILATE_PX, EDGE_DILATE_PX))
+    me_dil = cv2.dilate(master_edges, k)
+    le_dil = cv2.dilate(live_edges, k)
+
+    mm = (me_dil > 0).astype(np.uint8)
+    lm = (le_dil > 0).astype(np.uint8)
 
     inter = (mm & lm).sum()
     union = (mm | lm).sum()
@@ -87,35 +88,62 @@ def profile_check(master_mask: np.ndarray, live_mask: np.ndarray) -> ProfileChec
     else:
         area_dev = abs(a_m - a_l) / float(max(a_m, a_l))
 
-    cm = _largest_contour(master_sil)
-    cl = _largest_contour(live_sil)
-    if cm is None or cl is None:
+    # matchShapes accepts a grayscale image; passing the dilated edge map
+    # gives a Hu-moment distance over the full structure, not just one
+    # contour.
+    if a_m == 0 or a_l == 0:
         shape_dist = 1.0
     else:
-        shape_dist = float(cv2.matchShapes(cm, cl, cv2.CONTOURS_MATCH_I1, 0.0))
+        shape_dist = float(cv2.matchShapes(me_dil, le_dil, cv2.CONTOURS_MATCH_I1, 0.0))
 
-    # Diff = XOR of the filled silhouettes, eroded by EROSION_PX to absorb
-    # sub-pixel registration error. Now strictly an outline comparison.
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (EROSION_PX, EROSION_PX))
-    mm_e = cv2.erode(mm, kernel)
-    lm_e = cv2.erode(lm, kernel)
-    excess = (lm_e & (1 - mm_e)).astype(np.uint8) * 255   # live has, master doesn't
-    missing = (mm_e & (1 - lm_e)).astype(np.uint8) * 255  # master has, live doesn't
-    diff_mask = ((excess > 0) | (missing > 0)).astype(np.uint8) * 255
+    # Per-pixel deviation: master edge pixels NOT covered by any nearby live
+    # edge. This is the direct answer to the operator's question — exactly
+    # which edges from the reference are absent on the specimen.
+    master_edge_bool = master_edges > 0
+    live_edge_bool = live_edges > 0
+    missing_edges = master_edge_bool & ~(le_dil > 0)
+    excess_edges = live_edge_bool & ~(me_dil > 0)
 
+    missing = missing_edges.astype(np.uint8) * 255
+    excess = excess_edges.astype(np.uint8) * 255
+
+    total_master_edges = int(master_edge_bool.sum())
+    missing_count = int(missing_edges.sum())
+    missing_edge_ratio = (
+        missing_count / total_master_edges if total_master_edges > 0 else 0.0
+    )
+
+    # MISSING is the headline finding; EXCESS gets a different color label
+    # so the operator can tell them apart in the per-check card.
     boxes: List[BoundingBox] = []
-    boxes.extend(_box_components(excess, "EXCESS", "red"))
     boxes.extend(_box_components(missing, "MISSING", "red"))
+    boxes.extend(_box_components(excess, "EXCESS", "orange"))
 
-    fail = (shape_dist > SHAPE_HARD) or (area_dev > AREA_HARD) or (iou < IOU_HARD)
-    border = (shape_dist > SHAPE_BORDER) or (area_dev > AREA_BORDER) or (iou < IOU_BORDER)
+    # Build the deviation overlay used as the Profile cell's heatmap.
+    diff_overlay = visualizer.build_profile_deviation_overlay(
+        master_bgr, missing, excess
+    )
+
+    fail = (
+        shape_dist > SHAPE_HARD
+        or area_dev > AREA_HARD
+        or iou < IOU_HARD
+        or missing_edge_ratio > MISSING_HARD
+    )
+    border = (
+        shape_dist > SHAPE_BORDER
+        or area_dev > AREA_BORDER
+        or iou < IOU_BORDER
+        or missing_edge_ratio > MISSING_BORDER
+    )
     verdict = "FAIL" if fail else ("BORDERLINE" if border else "PASS")
 
     return ProfileCheckResult(
         shape_distance=shape_dist,
         area_deviation=area_dev,
         silhouette_iou=iou,
+        missing_edge_ratio=missing_edge_ratio,
         verdict=verdict,
-        diff_mask=diff_mask,
+        diff_overlay=diff_overlay,
         boxes=boxes,
     )

@@ -37,8 +37,11 @@ export interface InspectResponse {
   timings: StageTiming[];
   total_ms: number;
   master_png: string;
-  live_aligned_png: string;
-  difference_overlay_png: string;
+  master_contoured_png: string;
+  live_preprocessed_png: string;
+  live_segmented_png: string;
+  live_rotated_png: string;
+  live_registered_png: string;
 }
 
 export interface InfoResponse {

@@ -5,7 +5,6 @@ import { rotateImageFile } from "./utils/rotate";
 import type { InfoResponse, InspectResponse } from "./types";
 
 import { CheckResults } from "./components/CheckResults";
-import { ComparisonView } from "./components/ComparisonView";
 import { Divider } from "./components/Divider";
 import { Footer } from "./components/Footer";
 import { Hero } from "./components/Hero";
@@ -13,6 +12,7 @@ import { Masthead } from "./components/Masthead";
 import { TimingRow } from "./components/TimingRow";
 import { UploadRow } from "./components/UploadRow";
 import { Verdict } from "./components/Verdict";
+import { VisualDisplay } from "./components/VisualDisplay";
 
 export default function App() {
   const [info, setInfo] = useState<InfoResponse | null>(null);
@@ -92,10 +92,10 @@ export default function App() {
 
           <div className="section-label">
             <span className="num">iii.</span>
-            Visual Comparison
+            Visual Display
             <span className="line" />
           </div>
-          <ComparisonView result={result} />
+          <VisualDisplay result={result} />
 
           <div style={{ height: "3rem" }} />
 
