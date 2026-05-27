@@ -41,6 +41,7 @@ class BoundingBoxModel(BaseModel):
     color: str
     label: str
     score: Optional[float] = None
+    points: Optional[List[List[int]]] = None  # rotated/polygon corners, optional
 
 
 class CheckResultModel(BaseModel):
@@ -134,6 +135,9 @@ def _serialize(result: PipelineResult) -> InspectResponse:
             "defect_ratio": round(result.surface.defect_ratio, 5),
             "num_defect_regions": result.surface.num_defect_regions,
             "max_defect_size": result.surface.max_defect_size,
+            "max_color_distance": round(result.surface.max_color_distance, 2),
+            "num_scratches": result.surface.num_scratches,
+            "num_stone_defects": result.surface.num_stone_defects,
         },
         boxes=_boxes_to_models(result.surface.boxes),
         heatmap_png=_png_b64(surface_heatmap_bgr),

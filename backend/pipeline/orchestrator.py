@@ -172,21 +172,19 @@ def run_pipeline(
     )
     timings.append(StageTiming("profile_check", _ms(t0, _now())))
 
-    # Stage 6 — Decoration check.
-    # Compares the segmented master against the rotation-aligned live (NOT
-    # the SIFT-warped live). Working on the rotation-aligned frame avoids
-    # any homography-induced texture warping that could shift DINOv2 patch
-    # features and produce false decoration deviations.
+    # Stage 6 — Decoration check (SIFT-aligned live; sub-pixel registration
+    # gives DINOv2 patches a tighter correspondence with master patches, and
+    # gives the per-patch LAB color comparison cleaner alignment so a real
+    # color swap shows up sharply instead of getting diluted by offset).
+    shared_mask = ((master_seg.mask > 0) & (live_aligned_mask > 0)).astype(np.uint8) * 255
     t0 = _now()
-    deco_shared_mask = ((master_seg.mask > 0) & (rot.rotated_mask > 0)).astype(np.uint8) * 255
     deco = decoration_mod.decoration_check(
-        master_bgr, rot.rotated_image, piece_mask=deco_shared_mask
+        master_bgr, live_aligned, piece_mask=shared_mask
     )
     _sync()
     timings.append(StageTiming("decoration_check", _ms(t0, _now())))
 
-    # Stage 7 — Surface check (SIFT-aligned live; needs sub-pixel registration).
-    shared_mask = ((master_seg.mask > 0) & (live_aligned_mask > 0)).astype(np.uint8) * 255
+    # Stage 7 — Surface check (same SIFT-aligned live; needs sub-pixel registration).
     t0 = _now()
     surf = surface_check.surface_check(master_bgr, live_aligned, shared_mask)
     timings.append(StageTiming("surface_check", _ms(t0, _now())))

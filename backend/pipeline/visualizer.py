@@ -38,7 +38,14 @@ def draw_boxes(img: np.ndarray, boxes: Iterable[BoundingBox]) -> np.ndarray:
     out = img.copy()
     for b in boxes:
         color = COLOR_MAP.get(b.color, BGR_RED)
-        cv2.rectangle(out, (b.x, b.y), (b.x + b.w, b.y + b.h), color, 2)
+        if b.points:
+            # Rotated/polygon box — used for scratches (high aspect ratio).
+            # The polygon follows the scratch direction; (x, y, w, h) is the
+            # axis-aligned bounding rect of the polygon (used to anchor the label).
+            pts = np.array(b.points, dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(out, [pts], isClosed=True, color=color, thickness=2)
+        else:
+            cv2.rectangle(out, (b.x, b.y), (b.x + b.w, b.y + b.h), color, 2)
         label = b.label
         if label:
             font = cv2.FONT_HERSHEY_SIMPLEX

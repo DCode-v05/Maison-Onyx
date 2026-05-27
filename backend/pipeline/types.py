@@ -20,9 +20,15 @@ class BoundingBox:
     y: int
     w: int
     h: int
-    color: str          # "red" | "orange" | "magenta"
+    color: str          # "red" | "orange" | "magenta" | "cyan"
     label: str
     score: Optional[float] = None
+    # Optional rotated/polygon footprint for scratch-style defects. When set,
+    # the visualizer draws a polygon (cv2.polylines) using these corners
+    # instead of an axis-aligned rectangle. (x, y, w, h) still hold the
+    # axis-aligned bounding rectangle of the polygon for downstream consumers
+    # that only care about extent.
+    points: Optional[List[Tuple[int, int]]] = None
 
 
 @dataclass
@@ -77,7 +83,10 @@ class SurfaceCheckResult:
     defect_ratio: float
     num_defect_regions: int
     max_defect_size: int
-    defect_map: np.ndarray   # H x W float32 in [0, 1]
+    max_color_distance: float    # LAB delta-E worst-case across the in-piece region
+    num_scratches: int           # subset of boxes that were classified as scratches (rotated)
+    num_stone_defects: int       # subset of boxes inside the stone/textured zone
+    defect_map: np.ndarray       # H x W float32 in [0, 1]
     verdict: str
     boxes: List[BoundingBox] = field(default_factory=list)
 
